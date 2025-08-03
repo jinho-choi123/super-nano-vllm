@@ -12,13 +12,21 @@ GB = 2**10 * MB
 
 
 class ModelRunner:
-    def __init__(self, config: Config, rank: int, event: Event):
+    def __init__(self, config: Config, rank: int, event: Event | list[Event]):
+        """_summary_
+
+        Args:
+            config (Config): Overall configuration for super-nano-vllm.
+            rank (int): Rank used for distributed inference(tensor parallelism).
+            event (Event | list[Event]): For child processes, this is a single Event object. For the main process, this is a list of Event objects for each child process.
+        """
         self.config = config
         self.block_size = config.kv_cache_block_size
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel
         self.rank = rank
-        self.event = event
+        self.shared_memory_size = 2 * GB  # size of shared memory for communication
+        self.shm_lock = event
 
         # define communication protocol between multiple model runners
         # this is used to synchronize for tensor parallelism
@@ -46,7 +54,7 @@ class ModelRunner:
         if self.world_size > 1:
             if rank == 0:
                 self.shared_memory = SharedMemory(
-                    name="super-nano-vllm", create=True, size=2 * GB
+                    name="super-nano-vllm", create=True, size=self.shared_memory_size
                 )
                 dist.barrier()
             else:
@@ -57,31 +65,41 @@ class ModelRunner:
     def loop(self):
         """Looping ModelRunner process, and receive data from the main process."""
         while True:
-            method_name, args = self.read_shm()
+            method_name, args = self._receive()
             self.call(method_name, *args)
 
             if method_name == "exit":
                 break
 
-    def read_shm(self):
-        """Read data from shared memory."""
+    def _receive(self):
+        """Receive data from the shared memory. This is used in child processes."""
         assert self.world_size > 1 and self.rank
-        self.event.wait()
+
+        assert type(self.shm_lock) is Event, (
+            "shm_lock should be a Event objects in the child process."
+        )
+
+        self.shm_lock.wait()  # wait until the main process finish writing data to shared memory
 
         data_size = int.from_bytes(self.shared_memory.buf[0:4], "little")
 
         method_name, *args = pickle.loads(self.shared_memory.buf[4 : data_size + 4])
 
-        self.event.clear()
+        # clear the lock after receiving data
+        self.shm_lock.clear()
 
         return method_name, args
 
-    def write_shm(self, method_name, *args):
-        """Write data to shared memory."""
+    def send(self, method_name, *args):
+        """Send data from main process to child processes. This is used in the main process."""
         assert self.world_size > 1 and self.rank == 0
 
         data = pickle.dumps((method_name, *args))
         data_size = len(data)
+
+        assert data_size + 4 <= self.shared_memory_size, (
+            "Data size exceeds shared memory size."
+        )
 
         # write data size
         self.shared_memory.buf[0:4] = data_size.to_bytes(4, "little")
@@ -90,12 +108,16 @@ class ModelRunner:
         self.shared_memory.buf[4 : data_size + 4] = data
 
         # notify other processes
-        self.event.set()
+        assert type(self.shm_lock) is list[Event], (
+            "shm_lock should be a list of Event objects in the main process."
+        )
+        for child_shm_lock in self.shm_lock:
+            child_shm_lock.set()
 
     def call(self, method_name: str, *args):
         """Call method on the model runner. If it is main process, it writes to shared memory."""
         if self.world_size > 1 and self.rank == 0:
-            self.write_shm(method_name, *args)
+            self.send(method_name, *args)
         method = getattr(self, method_name, None)
         assert method is not None, f"Method {method_name} not found in ModelRunner."
 
