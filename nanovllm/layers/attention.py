@@ -3,20 +3,26 @@ from torch import nn
 import triton
 import triton.language as tl
 
-from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 
+class AttentionBase(nn.Module):
+    def __init__(self, num_head, head_dim, scale, num_kv_head):
+        super().__init__()
+        self.num_head = num_head
+        self.head_dim = head_dim
+        self.scale = scale
+        self.num_kv_head = num_kv_head
 
-@triton.jit
-def store_kvcache_kernel(
-    key_ptr,
-    key_stride: int,
-    value_ptr,
-    value_stride: int,
-    k_cache_ptr,
-    v_cache_ptr,
-    slot_mapping_ptr,
-    D: tl.constexpr,  # D == num_head * head_dim == size of a single layer
-):
-    idx = tl.program_id(0)
-    key_offsets = idx * key_stride + tl.arange(0, D)
-    value_offsets = idx * value_stride + tl.arange(0, D)
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    ) -> torch.Tensor:
+        """forward method of AttentionBase class
+
+        Args:
+            q (torch.Tensor(seq_len, num_head, head_dim)): Query
+            k (torch.Tensor(seq_len, num_head, head_dim)): Key
+            v (torch.Tensor(seq_len, num_head, head_dim)): Value
+
+        Returns:
+            torch.Tensor: Output tensor after attention computation
+        """
+        pass

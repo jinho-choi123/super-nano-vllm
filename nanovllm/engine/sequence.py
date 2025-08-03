@@ -6,9 +6,9 @@ from nanovllm.interface.sampling_params import SamplingParams
 
 
 class SequenceStatus(Enum):
-    WAITING = auto()
-    RUNNING = auto()
-    FINISHED = auto()
+    WAITING = auto()  # nothing is processed
+    RUNNING = auto()  # partially processed
+    FINISHED = auto()  # all tokens are processed
 
 
 class Sequence:
